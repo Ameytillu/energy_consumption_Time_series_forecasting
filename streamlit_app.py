@@ -98,7 +98,7 @@ def create_time_features(date_time):
     
     return features
 
-def calculate_weather_features(temp, humidity, solar, wind_speed):
+def calculate_weather_features(temp, humidity, solar, wind_speed, hour=12):
     """Calculate weather-derived features"""
     features = {}
     
@@ -108,8 +108,7 @@ def calculate_weather_features(temp, humidity, solar, wind_speed):
     features['CDD'] = max(0, temp - base_temp)
     
     # Temperature interaction with hour
-    current_hour = datetime.now().hour
-    features['Temp_x_Hour'] = temp * current_hour
+    features['Temp_x_Hour'] = temp * hour
     
     # Temperature categories
     features['Is_High_Temp'] = 1 if temp > 25 else 0
@@ -150,18 +149,25 @@ def create_prediction_input(datetime_input, temp, humidity, solar, wind_speed,
         'Outdoor_Air_Humidity_percent': humidity,
         'Wind_Speed_ms': wind_speed,
         
-        # Add lag features (simplified - using current values as approximation)
-        'Lag_6h_Load': electric_load_a + electric_load_b,
-        'Lag_12h_Load': electric_load_a + electric_load_b,
-        'Lag_24h_Load': electric_load_a + electric_load_b,
-        'Lag_48h_Load': electric_load_a + electric_load_b,
-        
-        # Rolling features (simplified)
-        'Rolling_Mean_12h': electric_load_a + electric_load_b,
-        'Rolling_Mean_24h': electric_load_a + electric_load_b,
-        'Rolling_Std_24h': 50.0,  # Default standard deviation
-        'EWMA_24h_Load': electric_load_a + electric_load_b,
+        # Temperature-hour interaction
+        'Temp_x_Hour': temp * datetime_input.hour,
     }
+    
+    # Add lag features (with some variation based on time of day)
+    total_load = electric_load_a + electric_load_b
+    time_factor = 0.8 + 0.4 * np.sin(2 * np.pi * datetime_input.hour / 24)
+    
+    # Add lag and rolling features
+    features.update({
+        'Lag_6h_Load': total_load * time_factor,
+        'Lag_12h_Load': total_load * (0.9 + 0.2 * np.cos(2 * np.pi * datetime_input.hour / 24)),
+        'Lag_24h_Load': total_load * (0.85 + 0.3 * np.sin(2 * np.pi * datetime_input.weekday() / 7)),
+        'Lag_48h_Load': total_load * 0.9,
+        'Rolling_Mean_12h': total_load * (0.95 + 0.1 * np.sin(datetime_input.hour * 0.5 + temp * 0.1)),
+        'Rolling_Mean_24h': total_load * (0.92 + 0.16 * np.sin(2 * np.pi * datetime_input.hour / 24)),
+        'Rolling_Std_24h': max(10.0, total_load * 0.08),
+        'EWMA_24h_Load': total_load * (0.88 + 0.24 * np.cos(2 * np.pi * datetime_input.hour / 24)),
+    })
     
     # Add time and weather features
     features.update(time_features)
@@ -193,36 +199,48 @@ def main():
     st.sidebar.header("🎛️ Input Parameters")
     
     # Time input
-    st.sidebar.subheader("📅 Time Settings")
-    date_input = st.sidebar.date_input("Select Date", datetime.now().date())
-    time_input = st.sidebar.time_input("Select Time", datetime.now().time())
-    datetime_input = datetime.combine(date_input, time_input)
+    st.sidebar.subheader("⏰ Time Settings")
+    hour_input = st.sidebar.slider("Hour of Day", 0, 23, datetime.now().hour, 1)
+    
+    # Create datetime with current date but selected hour
+    current_date = datetime.now().date()
+    datetime_input = datetime.combine(current_date, datetime.min.time().replace(hour=hour_input))
     
     # Weather conditions
     st.sidebar.subheader("🌤️ Weather Conditions")
-    temp = st.sidebar.slider("Outdoor Temperature (°C)", -20.0, 45.0, 20.0, 0.5)
-    humidity = st.sidebar.slider("Humidity (%)", 0.0, 100.0, 50.0, 1.0)
-    solar = st.sidebar.slider("Solar Irradiation (W/m²)", 0.0, 1000.0, 200.0, 10.0)
-    wind_speed = st.sidebar.slider("Wind Speed (m/s)", 0.0, 30.0, 5.0, 0.1)
+    temp = st.sidebar.slider("Outdoor Temperature (°C)", -20.0, 45.0, 
+                            st.session_state.get('temp', 20.0), 0.5, key='temp_slider')
+    humidity = st.sidebar.slider("Humidity (%)", 0.0, 100.0, 
+                               st.session_state.get('humidity', 50.0), 1.0, key='humidity_slider')
+    solar = st.sidebar.slider("Solar Irradiation (W/m²)", 0.0, 1000.0, 
+                            st.session_state.get('solar', 200.0), 10.0, key='solar_slider')
+    wind_speed = st.sidebar.slider("Wind Speed (m/s)", 0.0, 30.0, 
+                                 st.session_state.get('wind_speed', 5.0), 0.1, key='wind_slider')
     
     # Load adjustments
     st.sidebar.subheader("⚡ Load Adjustments")
-    electric_load_a = st.sidebar.slider("Electric Load A (kW)", 0.0, 1000.0, 400.0, 5.0)
-    electric_load_b = st.sidebar.slider("Electric Load B (kW)", 0.0, 1000.0, 400.0, 5.0)
-    cooling_load_a = st.sidebar.slider("Cooling Load A (kW)", 0.0, 500.0, 50.0, 5.0)
-    heating_load_a = st.sidebar.slider("Heating Load A (kW)", 0.0, 500.0, 50.0, 5.0)
+    electric_load_a = st.sidebar.slider("Electric Load A (kW)", 0.0, 1000.0, 
+                                      st.session_state.get('electric_load_a', 400.0), 5.0, key='load_a_slider')
+    electric_load_b = st.sidebar.slider("Electric Load B (kW)", 0.0, 1000.0, 
+                                      st.session_state.get('electric_load_b', 400.0), 5.0, key='load_b_slider')
+    cooling_load_a = st.sidebar.slider("Cooling Load A (kW)", 0.0, 500.0, 
+                                     st.session_state.get('cooling_load_a', 50.0), 5.0, key='cooling_slider')
+    heating_load_a = st.sidebar.slider("Heating Load A (kW)", 0.0, 500.0, 
+                                     st.session_state.get('heating_load_a', 50.0), 5.0, key='heating_slider')
     
     # Generation sources
     st.sidebar.subheader("🏭 Generation Sources")
-    pv_generation = st.sidebar.slider("PV Generation (kW)", 0.0, 500.0, 100.0, 5.0)
-    grid_import = st.sidebar.slider("Grid Import (kW)", 0.0, 1000.0, 300.0, 5.0)
+    pv_generation = st.sidebar.slider("PV Generation (kW)", 0.0, 500.0, 
+                                    st.session_state.get('pv_generation', 100.0), 5.0, key='pv_slider')
+    grid_import = st.sidebar.slider("Grid Import (kW)", 0.0, 1000.0, 
+                                  st.session_state.get('grid_import', 300.0), 5.0, key='grid_slider')
     
     # Main content area
     col1, col2 = st.columns([2, 1])
     
     with col1:
         # Create prediction
-        if st.button("🔮 Predict Energy Demand", type="primary", use_container_width=True):
+        if st.button("🔮 Predict Energy Demand", type="primary"):
             # Create input features
             features = create_prediction_input(
                 datetime_input, temp, humidity, solar, wind_speed,
@@ -292,7 +310,7 @@ def main():
                                orientation='h',
                                title="Top 10 Most Important Features")
                     fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig)
                 
             except Exception as e:
                 st.error(f"Error making prediction: {str(e)}")
@@ -303,8 +321,8 @@ def main():
         st.subheader("📋 Current Settings")
         
         st.info(f"""
-        **Date & Time:**  
-        {datetime_input.strftime('%Y-%m-%d %H:%M')}
+        **Time:**  
+        Hour: {hour_input}:00
         
         **Weather:**  
         🌡️ Temperature: {temp}°C  
@@ -329,18 +347,18 @@ def main():
         col_s1, col_s2 = st.columns(2)
         
         with col_s1:
-            if st.button("🌅 Morning Peak", use_container_width=True):
-                st.info("Set parameters for morning peak demand scenario")
+            if st.button("🌅 Morning Peak"):
+                st.info("Morning peak: High demand, low solar")
         
-            if st.button("🌞 Midday Solar", use_container_width=True):
-                st.info("Set parameters for high solar generation scenario")
+            if st.button("🌞 Midday Solar"):
+                st.info("Midday: High solar generation, moderate demand")
         
         with col_s2:
-            if st.button("🌙 Evening Peak", use_container_width=True):
-                st.info("Set parameters for evening peak demand scenario")
+            if st.button("🌙 Evening Peak"):
+                st.info("Evening peak: High demand, no solar")
                 
-            if st.button("❄️ Winter High", use_container_width=True):
-                st.info("Set parameters for winter high heating demand scenario")
+            if st.button("❄️ Winter High"):
+                st.info("Winter: High heating demand, low temperature")
     
     # Additional information
     with st.expander("ℹ️ About This Model"):
