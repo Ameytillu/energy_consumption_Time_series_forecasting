@@ -51,15 +51,30 @@ st.markdown("""
 @st.cache_data
 def load_model_and_scaler():
     """Load the pre-trained LightGBM model and scaler"""
-    try:
-        model = joblib.load('models/lightgbm_model.pkl')
-        scaler = joblib.load('models/scaler.pkl')
-        return model, scaler
-    except FileNotFoundError as e:
-        st.error(f"Model files not found: {e}")
+    import os
+    
+    # Check if model files exist
+    model_path = 'models/lightgbm_model.pkl'
+    scaler_path = 'models/scaler.pkl'
+    
+    if not os.path.exists(model_path):
+        st.error(f"❌ Model file not found: {model_path}")
+        st.info("💡 Please ensure the models/ folder and lightgbm_model.pkl are uploaded to your repository.")
         return None, None
+        
+    if not os.path.exists(scaler_path):
+        st.error(f"❌ Scaler file not found: {scaler_path}")
+        st.info("💡 Please ensure the models/ folder and scaler.pkl are uploaded to your repository.")
+        return None, None
+    
+    try:
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
+        st.success("✅ Model and scaler loaded successfully!")
+        return model, scaler
     except Exception as e:
-        st.error(f"Error loading model files: {e}")
+        st.error(f"❌ Error loading model files: {e}")
+        st.info("💡 Try re-uploading the model files or check if they're corrupted.")
         return None, None
 
 def create_time_features(date_time):
@@ -192,8 +207,21 @@ def main():
     model, scaler = load_model_and_scaler()
     
     if model is None or scaler is None:
-        st.error("Could not load the model. Please ensure model files are in the 'models' folder.")
-        return
+        st.warning("⚠️ Running in DEMO mode - model files not found")
+        st.info("""
+        📋 **Demo Mode Features:**
+        - Interactive UI with all controls
+        - Simulated predictions for testing
+        - All visualizations and features work
+        
+        🔧 **To enable real predictions:**
+        1. Upload `lightgbm_model.pkl` and `scaler.pkl` to the `models/` folder
+        2. Push changes to your repository
+        3. Restart the Streamlit app
+        """)
+        demo_mode = True
+    else:
+        demo_mode = False
     
     # Sidebar for inputs
     st.sidebar.header("🎛️ Input Parameters")
@@ -264,19 +292,31 @@ def main():
                 feature_df = feature_df[expected_features]
             
             try:
-                # Scale features if scaler is available
-                if scaler is not None:
-                    scaled_features = scaler.transform(feature_df)
-                    prediction = model.predict(scaled_features)[0]
+                if demo_mode:
+                    # Demo mode: create realistic simulated predictions
+                    base_load = electric_load_a + electric_load_b
+                    temp_factor = 1 + (temp - 20) * 0.02  # Temperature effect
+                    time_factor = 1 + 0.1 * np.sin(2 * np.pi * hour_input / 24)  # Daily cycle
+                    solar_factor = 1 - (pv_generation / 1000) * 0.1  # Solar offset
+                    prediction = base_load * temp_factor * time_factor * solar_factor
+                    prediction = max(200, min(1500, prediction))  # Reasonable bounds
                 else:
-                    prediction = model.predict(feature_df)[0]
+                    # Real model prediction
+                    if scaler is not None:
+                        scaled_features = scaler.transform(feature_df)
+                        prediction = model.predict(scaled_features)[0]
+                    else:
+                        prediction = model.predict(feature_df)[0]
                 
                 # Display prediction
+                mode_text = "🎯 Predicted Total Energy Demand" if not demo_mode else "🎯 Simulated Energy Demand (Demo Mode)"
+                detail_text = "Based on current parameter settings" if not demo_mode else "Simulated using realistic parameters"
+                
                 st.markdown(f"""
                 <div class="prediction-box">
-                    <h2>🎯 Predicted Total Energy Demand</h2>
+                    <h2>{mode_text}</h2>
                     <h1>{prediction:.2f} kW</h1>
-                    <p>Based on current parameter settings</p>
+                    <p>{detail_text}</p>
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -296,7 +336,7 @@ def main():
                     st.metric("Grid Efficiency", f"{efficiency:.1f}%")
                 
                 # Feature importance (if available)
-                if hasattr(model, 'feature_importances_'):
+                if not demo_mode and hasattr(model, 'feature_importances_'):
                     st.subheader("📊 Top Feature Influences")
                     
                     feature_importance = pd.DataFrame({
@@ -311,6 +351,16 @@ def main():
                                title="Top 10 Most Important Features")
                     fig.update_layout(height=400)
                     st.plotly_chart(fig)
+                elif demo_mode:
+                    st.subheader("📊 Key Factors (Demo Mode)")
+                    st.info("""
+                    **Main factors affecting energy demand:**
+                    - 🕐 Time of day (daily patterns)
+                    - 🌡️ Temperature (heating/cooling needs)
+                    - ⚡ Current electrical loads
+                    - ☀️ Solar generation (reduces grid demand)
+                    - 💨 Weather conditions
+                    """)
                 
             except Exception as e:
                 st.error(f"Error making prediction: {str(e)}")
